@@ -2,10 +2,8 @@ name: Update prices
 
 on:
   schedule:
-    # 平日 16:30 JST。日本市場の終了後。
+    # 平日 16:30 JST。東証の終了後に、上場全銘柄の日足を取る。
     - cron: "30 7 * * 1-5"
-    # 平日 21:00 UTC（夏時間の米国市場の終了後、日本時間の翌朝 6:00）。
-    - cron: "0 21 * * 1-5"
   workflow_dispatch:
 
 permissions:
@@ -18,6 +16,7 @@ concurrency:
 jobs:
   update:
     runs-on: ubuntu-latest
+    timeout-minutes: 180
     env:
       PYTHONIOENCODING: utf-8
     steps:
@@ -27,33 +26,21 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Fetch prices
+      - name: Fetch JPX daily prices
         id: fetch
-        run: python -m stockrec update --interval 1d --interval 1m --interval 5m
+        run: python -m stockrec jpx --workers 4 --days 20
         continue-on-error: true
-
-      - name: Write status
-        run: python -m stockrec list > data/status.txt
 
       - name: Commit archive
         run: |
-          if grep -q "監視銘柄がありません" data/status.txt; then
-            echo "監視銘柄がないため、コミットしません"
-            exit 0
-          fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add data/prices.db data/status.txt
-          status_changed=0
-          git diff --cached --quiet -- data/status.txt || status_changed=1
-          db_added=0
-          git diff --cached --diff-filter=A --quiet -- data/prices.db || db_added=1
-          if [ "$status_changed" -eq 0 ] && [ "$db_added" -eq 0 ]; then
-            git reset -q
+          git add data/jpx
+          if git diff --cached --quiet; then
             echo "価格に変化はないため、コミットしません"
             exit 0
           fi
-          git commit -m "Update price archive"
+          git commit -m "Update JPX daily prices"
           git push
 
       - name: Fail if fetch failed

@@ -8,6 +8,7 @@ class NormalizeSymbolTest(unittest.TestCase):
         self.assertEqual(normalize_symbol("7203"), "7203.T")
         self.assertEqual(normalize_symbol(" 9984 "), "9984.T")
         self.assertEqual(normalize_symbol("7203.t"), "7203.T")
+        self.assertEqual(normalize_symbol("25935"), "25935.T")
 
     def test_alphanumeric_tokyo_code_gets_suffix(self):
         self.assertEqual(normalize_symbol("285a"), "285A.T")

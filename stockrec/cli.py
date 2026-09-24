@@ -8,11 +8,22 @@ import os
 import sys
 import time
 import unicodedata
+import urllib.error
 from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from stockrec.intervals import INTERVALS, INTERVAL_NAMES, get_interval
+from stockrec.jpxarchive import (
+    count_data_rows,
+    default_archive_dir,
+    latest_daily_path,
+    load_listings,
+    read_symbol_daily,
+    save_listings,
+    update_market,
+)
+from stockrec.jpxlist import download_listings
 from stockrec.store import Store
 from stockrec.symbols import guess_timezone, normalize_symbol
 from stockrec.sync import SyncResult, sync_many
@@ -107,6 +118,13 @@ def build_parser() -> argparse.ArgumentParser:
     watch.add_argument("--interval", default="1m", choices=INTERVAL_NAMES)
     watch.add_argument("--every", type=int, default=60, help="何秒ごとに取得するか（最短10秒）")
     watch.set_defaults(func=cmd_watch)
+
+    jpx = sub.add_parser("jpx", help="東証に上場している全銘柄の日足を保存する")
+    jpx.add_argument("--listings-only", action="store_true", help="価格は取らず、上場一覧だけ更新する")
+    jpx.add_argument("--days", type=int, default=20, help="さかのぼって取り直す日数")
+    jpx.add_argument("--workers", type=int, default=4, help="同時に問い合わせる数")
+    jpx.add_argument("--out", help="保存先。省略時は ./data/jpx")
+    jpx.set_defaults(func=cmd_jpx)
     return parser
 
 
@@ -148,8 +166,22 @@ def cmd_remove(args, store: Store, client) -> int:
 def cmd_list(args, store: Store, client) -> int:
     del args, client
     rows = store.symbols()
+    archive = default_archive_dir()
+    latest = latest_daily_path(archive)
+    listings = load_listings(archive) if (archive / "listings.csv").exists() else []
     print(f"データベース: {_display_path(store.path)}")
+    if listings or latest:
+        if listings:
+            print(f"JPX上場銘柄 {len(listings)}（一覧日 {listings[0].as_of}）")
+        if latest:
+            print(f"日足 {latest.stem}  {count_data_rows(latest)}銘柄  {_display_path(latest)}")
+    if len(rows) > 20:
+        print("銘柄数が多いため個別表示は省略します。例: python -m stockrec show 7203")
+        return 0
     if not rows:
+        if listings or latest:
+            print("個別は python -m stockrec show 7203")
+            return 0
         print("監視銘柄がありません。例: python -m stockrec add 7203 9984")
         return 0
     now = int(time.time())
@@ -193,6 +225,8 @@ def cmd_show(args, store: Store, client) -> int:
     if limit is not None and limit < 1:
         raise ValueError("--last は 1 以上にしてください")
     rows = store.bars(symbol, args.interval, start=start, end=end, limit=limit)
+    if not rows and args.interval == "1d":
+        return _show_archive(symbol, args)
     if not rows:
         print(f"保存された足がありません: {symbol} {args.interval}", file=sys.stderr)
         return 1
@@ -254,6 +288,64 @@ def cmd_export(args, store: Store, client) -> int:
     writer = csv.writer(sys.stdout, lineterminator="\n")
     writer.writerow(CSV_HEADERS)
     writer.writerows(lines)
+    return 0
+
+
+def cmd_jpx(args, store: Store, client) -> int:
+    archive = Path(args.out) if args.out else default_archive_dir()
+    try:
+        listings = download_listings()
+    except urllib.error.URLError as exc:
+        raise YahooError("JPXの上場一覧を取得できませんでした") from exc
+    path = save_listings(archive, listings)
+    as_of = listings[0].as_of or "不明"
+    print(f"上場一覧 {len(listings)}銘柄（{as_of}）を {_display_path(path)} に保存しました")
+    if args.listings_only:
+        return 0
+    result = update_market(
+        listings,
+        client,
+        archive,
+        store=store,
+        days=args.days,
+        workers=args.workers,
+    )
+    print(f"日足: 取得 {result.fetched}銘柄 / 失敗 {result.failed} / ファイル {result.files}")
+    for symbol, message in result.errors[:15]:
+        print(f"  {symbol}: {message}", file=sys.stderr)
+    if result.failed > 15:
+        print(f"  ほか {result.failed - 15} 件", file=sys.stderr)
+    if result.listings and result.fetched == 0:
+        return 1
+    if result.listings and result.failed / result.listings > 0.2:
+        return 1
+    return 0
+
+
+def _show_archive(symbol: str, args) -> int:
+    archived = read_symbol_daily(default_archive_dir(), symbol)
+    if args.start:
+        archived = [row for row in archived if row["date"] >= args.start[:10]]
+    if args.end:
+        archived = [row for row in archived if row["date"] <= args.end[:10]]
+    if not args.all:
+        if args.last < 1:
+            raise ValueError("--last は 1 以上にしてください")
+        archived = archived[-args.last :]
+    if not archived:
+        print(f"保存された足がありません: {symbol} {args.interval}", file=sys.stderr)
+        return 1
+    print(f"{symbol}  日足  {len(archived)}本")
+    print(
+        f"{_pad('日時', 16)}  {_pad('始値', 10, 'right')}  {_pad('高値', 10, 'right')}  "
+        f"{_pad('安値', 10, 'right')}  {_pad('終値', 10, 'right')}  {_pad('出来高', 14, 'right')}"
+    )
+    for row in archived:
+        print(
+            f"{_pad(row['date'], 16)}  {_pad(row['open'], 10, 'right')}  {_pad(row['high'], 10, 'right')}  "
+            f"{_pad(row['low'], 10, 'right')}  {_pad(row['close'], 10, 'right')}  "
+            f"{_pad(_fmt_volume(row['volume']) if row['volume'] else '', 14, 'right')}"
+        )
     return 0
 
 

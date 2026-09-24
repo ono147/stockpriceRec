@@ -3,8 +3,8 @@ __pycache__/
 .venv/
 venv/
 data/*
-!data/prices.db
-!data/status.txt
+!data/jpx/
+!data/jpx/**
 *.db-wal
 *.db-shm
 .pytest_cache/
