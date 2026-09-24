@@ -42,6 +42,7 @@ class CliTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.db = str(Path(self.tmp.name) / "prices.db")
+        self.watchlist = str(Path(self.tmp.name) / "watchlist.txt")
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -50,7 +51,7 @@ class CliTest(unittest.TestCase):
         stdout = io.StringIO()
         stderr = io.StringIO()
         with redirect_stdout(stdout), redirect_stderr(stderr):
-            code = main(["--db", self.db, *args], client=client)
+            code = main(["--db", self.db, "--watchlist", self.watchlist, *args], client=client)
         return code, stdout.getvalue(), stderr.getvalue()
 
     def test_usage_without_a_command(self):
@@ -63,6 +64,7 @@ class CliTest(unittest.TestCase):
         code, out, _err = self.run_cli("add", "7203")
         self.assertEqual(code, 0)
         self.assertIn("7203.T", out)
+        self.assertIn("7203.T", Path(self.watchlist).read_text(encoding="utf-8"))
 
         code, out, _err = self.run_cli("add", "7203")
         self.assertIn("すでに登録済みです", out)
@@ -110,6 +112,32 @@ class CliTest(unittest.TestCase):
         code, _out, err = self.run_cli("watch", "--every", "1")
         self.assertEqual(code, 1)
         self.assertIn("10", err)
+
+    def test_update_reads_symbols_from_the_watchlist_file(self):
+        Path(self.watchlist).write_text("# 日本株\n7203 # トヨタ\n", encoding="utf-8")
+        day = int(datetime(2026, 9, 18, tzinfo=JST).timestamp())
+        client = FakeClient(chart_with(day, 2500))
+        code, out, err = self.run_cli("update", client=client)
+        self.assertEqual(code, 0, err)
+        self.assertEqual(client.calls[0][0], "7203.T")
+        code, listed, err = self.run_cli("list")
+        self.assertEqual(code, 0, err)
+        self.assertIn("終値 2500", listed)
+
+    def test_remove_drops_the_watchlist_line_and_keeps_comments(self):
+        Path(self.watchlist).write_text("# header\n7203\nAAPL\n", encoding="utf-8")
+        code, _out, err = self.run_cli("remove", "7203")
+        self.assertEqual(code, 0, err)
+        text = Path(self.watchlist).read_text(encoding="utf-8")
+        self.assertIn("# header", text)
+        self.assertNotIn("7203", text)
+        self.assertIn("AAPL", text)
+
+    def test_update_with_no_symbols_does_nothing(self):
+        Path(self.watchlist).write_text("# none yet\n", encoding="utf-8")
+        code, out, err = self.run_cli("update")
+        self.assertEqual(code, 0, err)
+        self.assertIn("監視銘柄がありません", out)
 
     def test_show_reports_when_nothing_is_stored(self):
         code, _out, err = self.run_cli("show", "AAPL")

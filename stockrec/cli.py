@@ -16,6 +16,7 @@ from stockrec.intervals import INTERVALS, INTERVAL_NAMES, get_interval
 from stockrec.store import Store
 from stockrec.symbols import guess_timezone, normalize_symbol
 from stockrec.sync import SyncResult, sync_many
+from stockrec.watchlist import ensure_in_watchlist, read_watchlist, remove_from_watchlist, resolve_watchlist
 from stockrec.yahoo import YahooClient, YahooError
 
 CSV_HEADERS = ("銘柄", "足", "日時", "始値", "高値", "安値", "終値", "調整後終値", "出来高")
@@ -53,6 +54,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--db",
         help="保存先のSQLiteファイル。省略時は ./data/prices.db（環境変数 STOCKREC_DB でも指定できます）",
+    )
+    parser.add_argument(
+        "--watchlist",
+        help="監視銘柄のテキスト。省略時は ./watchlist.txt（環境変数 STOCKREC_WATCHLIST でも指定できます）",
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -107,24 +112,29 @@ def build_parser() -> argparse.ArgumentParser:
 
 def cmd_add(args, store: Store, client) -> int:
     del client
+    path = resolve_watchlist(args.watchlist)
     for raw in args.symbols:
         symbol = normalize_symbol(raw)
         already = store.get_symbol(symbol) is not None
-        store.upsert_symbol(symbol, timezone_name=guess_timezone(symbol))
+        _remember_symbol(store, path, symbol)
         if already:
             print(f"すでに登録済みです: {symbol}")
         else:
             print(f"登録しました: {symbol}")
+    print(f"監視リスト: {_display_path(path)}")
     print("取得するには: python -m stockrec update")
     return 0
 
 
 def cmd_remove(args, store: Store, client) -> int:
     del client
+    path = resolve_watchlist(args.watchlist)
     code = 0
     for raw in args.symbols:
         symbol = normalize_symbol(raw)
-        if not store.remove_symbol(symbol, purge=args.purge):
+        in_db = store.remove_symbol(symbol, purge=args.purge)
+        in_file = remove_from_watchlist(path, symbol)
+        if not in_db and not in_file:
             print(f"登録されていません: {symbol}", file=sys.stderr)
             code = 1
             continue
@@ -138,7 +148,7 @@ def cmd_remove(args, store: Store, client) -> int:
 def cmd_list(args, store: Store, client) -> int:
     del args, client
     rows = store.symbols()
-    print(f"データベース: {store.path}")
+    print(f"データベース: {_display_path(store.path)}")
     if not rows:
         print("監視銘柄がありません。例: python -m stockrec add 7203 9984")
         return 0
@@ -154,16 +164,21 @@ def cmd_list(args, store: Store, client) -> int:
         for interval in _sorted_intervals(intervals):
             count, oldest, newest = store.summary(row["symbol"], interval)
             span = f"{_format_ts(oldest, interval, row['timezone'])} .. {_format_ts(newest, interval, row['timezone'])}"
+            latest = store.bars(row["symbol"], interval, limit=1)
+            close = _fmt_price(latest[-1]["close"]) if latest else ""
             note = _retention_note(interval, oldest, now)
             suffix = f"  ※{note}" if note else ""
-            print(f"  {interval:<4} {count:>6}本  {span}{suffix}")
+            print(f"  {interval:<4} {count:>6}本  {span}  終値 {close}{suffix}")
     return 0
 
 
 def cmd_update(args, store: Store, client) -> int:
     symbols = _symbols_from_args(args, store)
+    if not symbols:
+        print("監視銘柄がありません。watchlist.txt に銘柄を書いてください")
+        return 0
     intervals = args.intervals or ["1d"]
-    print(f"データベース: {store.path}")
+    print(f"データベース: {_display_path(store.path)}")
     results = sync_many(store, client, symbols, intervals)
     return _print_results(results)
 
@@ -246,7 +261,10 @@ def cmd_watch(args, store: Store, client) -> int:
     if args.every < 10:
         raise ValueError("--every は 10 秒以上にしてください")
     symbols = _symbols_from_args(args, store)
-    print(f"データベース: {store.path}")
+    if not symbols:
+        print("監視銘柄がありません。watchlist.txt に銘柄を書いてください")
+        return 0
+    print(f"データベース: {_display_path(store.path)}")
     print(f"{', '.join(symbols)} の{get_interval(args.interval).label}を {args.every} 秒ごとに保存します。止めるときは Ctrl+C")
     try:
         while True:
@@ -261,18 +279,34 @@ def cmd_watch(args, store: Store, client) -> int:
 
 
 def _symbols_from_args(args, store: Store) -> list[str]:
+    path = resolve_watchlist(args.watchlist)
     if args.symbols:
         symbols = []
         for raw in args.symbols:
             symbol = normalize_symbol(raw)
-            if store.get_symbol(symbol) is None:
-                store.upsert_symbol(symbol, timezone_name=guess_timezone(symbol))
+            _remember_symbol(store, path, symbol)
             symbols.append(symbol)
         return symbols
-    symbols = [row["symbol"] for row in store.symbols()]
-    if not symbols:
-        raise ValueError("監視銘柄がありません。例: python -m stockrec add 7203")
-    return symbols
+    if path.exists():
+        symbols = read_watchlist(path)
+        for symbol in symbols:
+            if store.get_symbol(symbol) is None:
+                store.upsert_symbol(symbol, timezone_name=guess_timezone(symbol))
+        return symbols
+    return [row["symbol"] for row in store.symbols()]
+
+
+def _remember_symbol(store: Store, path: Path, symbol: str) -> None:
+    if store.get_symbol(symbol) is None:
+        store.upsert_symbol(symbol, timezone_name=guess_timezone(symbol))
+    ensure_in_watchlist(path, symbol)
+
+
+def _display_path(path: Path) -> str:
+    try:
+        return str(path.resolve().relative_to(Path.cwd().resolve()))
+    except ValueError:
+        return str(path)
 
 
 def _print_results(results: list[SyncResult]) -> int:

@@ -1,0 +1,61 @@
+name: Update prices
+
+on:
+  schedule:
+    # 平日 16:30 JST。日本市場の終了後。
+    - cron: "30 7 * * 1-5"
+    # 平日 21:00 UTC（夏時間の米国市場の終了後、日本時間の翌朝 6:00）。
+    - cron: "0 21 * * 1-5"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: price-archive
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    env:
+      PYTHONIOENCODING: utf-8
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Fetch prices
+        id: fetch
+        run: python -m stockrec update --interval 1d --interval 1m --interval 5m
+        continue-on-error: true
+
+      - name: Write status
+        run: python -m stockrec list > data/status.txt
+
+      - name: Commit archive
+        run: |
+          if grep -q "監視銘柄がありません" data/status.txt; then
+            echo "監視銘柄がないため、コミットしません"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/prices.db data/status.txt
+          status_changed=0
+          git diff --cached --quiet -- data/status.txt || status_changed=1
+          db_added=0
+          git diff --cached --diff-filter=A --quiet -- data/prices.db || db_added=1
+          if [ "$status_changed" -eq 0 ] && [ "$db_added" -eq 0 ]; then
+            git reset -q
+            echo "価格に変化はないため、コミットしません"
+            exit 0
+          fi
+          git commit -m "Update price archive"
+          git push
+
+      - name: Fail if fetch failed
+        if: steps.fetch.outcome == 'failure'
+        run: exit 1

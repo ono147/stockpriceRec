@@ -40,7 +40,7 @@ python -m stockrec export 7203 --interval 1d -o toyota.csv
 python -m stockrec export --all --interval 1d -o all.csv
 ```
 
-`update` の銘柄を省略すると、登録済みをすべて取ります。足を省略すると日足だけです。
+`update` の銘柄を省略すると、`watchlist.txt` にある銘柄を取ります。このファイルがまだ無いときだけ、データベースに登録済みの銘柄を取ります。足を省略すると日足だけです。
 
 ```bash
 python -m stockrec remove 7203
@@ -49,41 +49,41 @@ python -m stockrec remove 7203 --purge
 
 `remove` は監視リストから外すだけです。保存済みの価格は残します。価格ごと消すときは `--purge` を付けます。
 
-## 定期的に貯める
+## 自動実行して Git に残す
 
-穴を開けない目安は次のとおりです。
+PCを起動したままにしなくても、GitHub Actions が平日に取得し、`data/prices.db` をこのリポジトリへコミットします。価格が変わったときだけコミットします。
 
-- 1分足は 12日より短い間隔。毎日が確実です
-- 5分足は 90日より短い間隔
-- 日足は、何日空いても次の `update` で埋まります
+1. `watchlist.txt` に銘柄を書く（`python -m stockrec add 7203` でも同じファイルに足されます）。
+2. その変更を `main` に入れる。スケジュールはデフォルトブランチだけで動きます。
+3. 初回は GitHub の Actions タブから「Update prices」を手動実行できる。以降は次の時刻に動きます。混雑しているときは開始が遅れることがあります。
+   - 平日 16:30（日本時間）: 日本市場の終了後
+   - 平日 6:00（日本時間）: 米国市場の終了後
 
-日本株なら、平日の取引終了後に次を1回実行します。
+`data/status.txt` には銘柄ごとの本数と終値が残り、GitHub 上で何が更新されたか分かります。価格そのものは `data/prices.db` です。中身を見るときは `show` か `export` を使います。
 
-```bash
-python -m stockrec update --interval 1d --interval 1m --interval 5m
-```
+手元の PC からも同じデータベースをコミットすると、Actions の更新と衝突します。Git 上の蓄積は Actions に任せ、手元で直すファイルは `watchlist.txt` だけにしてください。
 
-同じ内容を `run_update.sh` と `run_update.bat` に入れてあります。
+穴を開けない間隔は、1分足が12日より短いこと、5分足が90日より短いことです。上のスケジュールはどちらも満たします。日足は何日空いても、次の取得で埋まります。
 
-Windows のタスクスケジューラでは、`run_update.bat` を平日 16:30 に実行します。cron では次のようにします。7:30 UTC は日本時間の 16:30 です。
+前回の分足取得から上限以上の時間が空くと、そのあいだは Yahoo がもう返さないため埋まりません。`update` はその旨を表示します。
 
-```
-30 7 * * 1-5 /path/to/stockpriceRec/run_update.sh
-```
-
-取引時間中の途中経過も残すときは、市場が開いているあいだ次を動かします。止めるときは Ctrl+C です。
+取引時間中の途中経過も残すときは、市場が開いているあいだ次を動かします。止めるときは Ctrl+C です。この実行は Git には送りません。
 
 ```bash
 python -m stockrec watch --interval 1m --every 60
 ```
 
-前回の分足取得から上限以上の時間が空くと、そのあいだは Yahoo がもう返さないため埋まりません。`update` はその旨を表示します。
+## 手元で実行する
+
+同じ取得を自分の PC で行うコマンドは `run_update.sh` と `run_update.bat` に入れてあります。Windows のタスクスケジューラなら `run_update.bat` を平日 16:30 に、cron なら次です。7:30 UTC は日本時間の 16:30 です。
+
+```
+30 7 * * 1-5 /path/to/stockpriceRec/run_update.sh
+```
 
 ## 保存先
 
-既定のファイルは、コマンドを実行したディレクトリの `data/prices.db` です。`--db` か環境変数 `STOCKREC_DB` で場所を変えられます。
-
-このファイルが蓄積そのものです。バックアップしてください。Git の対象外です。
+既定のファイルは、コマンドを実行したディレクトリの `data/prices.db` です。`--db` か環境変数 `STOCKREC_DB` で場所を変えられます。監視銘柄は `watchlist.txt`（環境変数 `STOCKREC_WATCHLIST`）です。
 
 CSV は Excel で文字化けしないよう、UTF-8（BOM 付き）で書き出します。日足の時刻は取引所の現地日付、分足は足の開始時刻です。
 

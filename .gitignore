@@ -2,8 +2,9 @@ __pycache__/
 *.py[cod]
 .venv/
 venv/
-data/
-*.db
+data/*
+!data/prices.db
+!data/status.txt
 *.db-wal
 *.db-shm
 .pytest_cache/

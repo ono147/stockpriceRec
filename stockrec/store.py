@@ -50,7 +50,11 @@ class Store:
         self._conn.executescript(SCHEMA)
 
     def close(self) -> None:
-        self._conn.close()
+        # WAL の内容を本体ファイルへ書き戻す。Git には本体だけを残す。
+        try:
+            self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        finally:
+            self._conn.close()
 
     def upsert_symbol(
         self,

@@ -39,6 +39,18 @@ class StoreTest(unittest.TestCase):
         self.assertTrue(self.store.remove_symbol("7203.T", purge=True))
         self.assertEqual(self.store.bars("7203.T", "1d"), [])
 
+    def test_close_keeps_prices_in_the_main_file_without_the_wal(self):
+        self.store.upsert_symbol("7203.T", timezone_name="Asia/Tokyo")
+        self.store.upsert_bars("7203.T", "1d", [bar(100, 2000)])
+        path = self.store.path
+        self.store.close()
+        for suffix in ("-wal", "-shm"):
+            side = Path(str(path) + suffix)
+            if side.exists():
+                side.unlink()
+        self.store = Store(path)
+        self.assertEqual([row["close"] for row in self.store.bars("7203.T", "1d")], [2000])
+
     def test_limit_returns_the_newest_rows_in_time_order(self):
         self.store.upsert_bars("AAPL", "1d", [bar(1, 1), bar(2, 2), bar(3, 3)])
         rows = self.store.bars("AAPL", "1d", limit=2)
